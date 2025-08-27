@@ -359,22 +359,64 @@ class ENL_Plugin
         return $this->send_post_to($email, $token, $post_id);
     }
 
-    /** Envio SMTP usando PHPMailer */
+    /** Envio SMTP usando PHPMailer (com debug transitório para a tela Verify) */
     private function smtp_send($email, $subject, $body)
     {
         $opts = get_option(self::OPT, []);
 
-        // Configura SMTP via phpmailer_init
-        add_action('phpmailer_init', function ($phpmailer) use ($opts) {
+        // ===== buffers de debug =====
+        $debug_lines = [];
+        $last_error  = '';
+
+        // 1) Força o FROM/NAME do WordPress (evita wordpress@localhost)
+        $from_filter = function ($from) use ($opts) {
+            return !empty($opts['from_email']) ? $opts['from_email'] : $from;
+        };
+        $name_filter = function ($name) use ($opts) {
+            return !empty($opts['from_name']) ? $opts['from_name'] : get_bloginfo('name');
+        };
+        add_filter('wp_mail_from', $from_filter, 999);
+        add_filter('wp_mail_from_name', $name_filter, 999);
+
+        // 2) Captura erro do wp_mail_failed
+        $failed_hook = function ($wp_error) use (&$last_error, &$debug_lines) {
+            if (is_wp_error($wp_error)) {
+                $last_error = $wp_error->get_error_message();
+                $debug_lines[] = 'wp_mail_failed → ' . $last_error;
+
+                $data = $wp_error->get_error_data();
+                if (!empty($data) && is_array($data)) {
+                    foreach ($data as $k => $v) {
+                        if (is_scalar($v)) {
+                            $debug_lines[] = "data[$k] → $v";
+                        }
+                    }
+                }
+            }
+        };
+        add_action('wp_mail_failed', $failed_hook, 10, 1);
+
+        // 3) Configura SMTP via phpmailer_init + transcript em $debug_lines
+        $phpmailer_hook = function ($phpmailer) use ($opts, &$debug_lines) {
             if (!empty($opts['smtp_host'])) {
                 $phpmailer->isSMTP();
-                $phpmailer->Host       = $opts['smtp_host'];
-                $phpmailer->Port       = (int)($opts['smtp_port'] ?? 587);
-                $phpmailer->SMTPAuth   = true;
-                $phpmailer->Username   = $opts['smtp_user'];
-                $phpmailer->Password   = $opts['smtp_pass'];
-                $phpmailer->SMTPSecure = 'tls';
+                $phpmailer->Host     = $opts['smtp_host'];
+                $phpmailer->Port     = (int)($opts['smtp_port'] ?? 587);
+                $phpmailer->SMTPAuth = !empty($opts['smtp_auth']);
+                $phpmailer->Username = $opts['smtp_user'] ?? '';
+                $phpmailer->Password = $opts['smtp_pass'] ?? '';
+
+                // 465 => ssl | 587 => tls | senão, tls por padrão
+                $secure = 'tls';
+                if (!empty($opts['smtp_port'])) {
+                    $p = (int)$opts['smtp_port'];
+                    if ($p === 465) $secure = 'ssl';
+                    elseif ($p === 587) $secure = 'tls';
+                }
+                $phpmailer->SMTPSecure = $secure;
             }
+
+            // reforça o From também no PHPMailer (além dos filtros do WP)
             if (!empty($opts['from_email'])) {
                 $phpmailer->setFrom(
                     $opts['from_email'],
@@ -382,19 +424,54 @@ class ENL_Plugin
                     false
                 );
             }
-        });
 
-        // Headers HTML
+            // Nível de debug (0,1,2) vindo das Configs
+            $phpmailer->SMTPDebug   = (int)($opts['smtp_debug'] ?? 0);
+            $phpmailer->Debugoutput = function ($str, $level) use (&$debug_lines) {
+                $debug_lines[] = trim($str);
+            };
+        };
+        add_action('phpmailer_init', $phpmailer_hook);
+
+        // 4) Headers HTML
         $headers = ['Content-Type: text/html; charset=UTF-8'];
 
-        // Usa wp_mail do WordPress
+        // 5) Dispara
         $ok = wp_mail($email, $subject, $body, $headers);
 
-        // Remove hook pra não interferir em outros envios
-        remove_all_actions('phpmailer_init');
+        // 6) Limpa hooks para não vazar
+        remove_action('phpmailer_init', $phpmailer_hook);
+        remove_action('wp_mail_failed', $failed_hook, 10);
+        remove_filter('wp_mail_from', $from_filter, 999);
+        remove_filter('wp_mail_from_name', $name_filter, 999);
+
+        // 7) Monta resumo das configs para debug (mascara usuário)
+        $mask = function ($s) {
+            if (!$s) return '';
+            $len = strlen($s);
+            if ($len <= 4) return str_repeat('•', $len);
+            return substr($s, 0, 2) . str_repeat('•', max(0, $len - 4)) . substr($s, -2);
+        };
+
+        $meta = [
+            'to'         => $email,
+            'subject'    => $subject,
+            'host'       => $opts['smtp_host'] ?? '',
+            'port'       => (int)($opts['smtp_port'] ?? 0),
+            'auth'       => !empty($opts['smtp_auth']) ? 'on' : 'off',
+            'username'   => $mask($opts['smtp_user'] ?? ''),
+            'from'       => $opts['from_email'] ?? '',
+            'result'     => $ok ? 'OK' : 'FAIL',
+            'last_error' => $last_error,
+            'lines'      => $debug_lines,
+        ];
+
+        // 8) Guarda por 5 minutos para a tela "Verificar Envio"
+        set_transient('enl_last_debug', $meta, 5 * MINUTE_IN_SECONDS);
 
         return $ok;
     }
+
 
     /** Exporta CSV (apenas ativos) */
     public function export_csv()

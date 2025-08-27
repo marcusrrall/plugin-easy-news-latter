@@ -68,25 +68,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['enl_save']) && curren
     check_admin_referer('enl_save_settings');
 
     // SMTP
-    $opts['smtp_debug'] = isset($_POST['smtp_debug']) ? (int) $_POST['smtp_debug'] : 0;
-    $opts['smtp_host']  = sanitize_text_field($_POST['smtp_host'] ?? '');
-    $opts['smtp_port']  = (int) ($_POST['smtp_port'] ?? 587);
-    $opts['smtp_auth']  = isset($_POST['smtp_auth']) ? 1 : 0;
-    $opts['smtp_user']  = sanitize_text_field($_POST['smtp_user'] ?? '');
-    $opts['smtp_pass']  = sanitize_text_field($_POST['smtp_pass'] ?? '');
-    $opts['from_email'] = sanitize_email($_POST['from_email'] ?? '');
-    $opts['from_name']  = sanitize_text_field($_POST['from_name'] ?? get_bloginfo('name'));
+    $opts['smtp_debug']  = isset($_POST['smtp_debug']) ? (int) $_POST['smtp_debug'] : 0;
+    $opts['smtp_host']   = sanitize_text_field($_POST['smtp_host'] ?? '');
+    $opts['smtp_port']   = (int) ($_POST['smtp_port'] ?? 587);
+    $opts['smtp_auth']   = isset($_POST['smtp_auth']) ? 1 : 0;
+    $opts['smtp_user']   = sanitize_text_field($_POST['smtp_user'] ?? '');
+    $opts['smtp_pass']   = sanitize_text_field($_POST['smtp_pass'] ?? '');
+    $opts['from_email']  = sanitize_email($_POST['from_email'] ?? '');
+    $opts['from_name']   = sanitize_text_field($_POST['from_name'] ?? get_bloginfo('name'));
+
+    // NOVO: Segurança (none|tls|ssl)
+    $secure = $_POST['smtp_secure'] ?? 'tls';
+    $opts['smtp_secure'] = in_array($secure, ['none', 'tls', 'ssl'], true) ? $secure : 'tls';
 
     // Formulário HTML personalizado
     if (isset($_POST['form_html'])) {
-        // REMOVE as barras automáticas do WP
-        $raw = wp_unslash($_POST['form_html']);
-
+        $raw = wp_unslash($_POST['form_html']); // remove barras automáticas do WP
         if (current_user_can('unfiltered_html')) {
-            // Admin: salva cru
             $opts['form_html'] = $raw;
         } else {
-            // Sem unfiltered_html: whitelist de tags de formulário
             $opts['form_html'] = wp_kses($raw, enl_allowed_form_tags());
         }
     }
@@ -106,39 +106,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['enl_save']) && curren
         <table class="form-table">
             <tr>
                 <th><label for="smtp_host">Host</label></th>
-                <td><input type="text" class="regular-text" id="smtp_host" name="smtp_host" value="<?php echo esc_attr($opts['smtp_host'] ?? ''); ?>" placeholder="smtp.seuservidor.com"></td>
+                <td>
+                    <input type="text" class="regular-text" id="smtp_host" name="smtp_host"
+                        value="<?php echo esc_attr($opts['smtp_host'] ?? ''); ?>"
+                        placeholder="smtp.seuservidor.com">
+                </td>
             </tr>
+
             <tr>
                 <th><label for="smtp_port">Porta</label></th>
-                <td><input type="number" id="smtp_port" name="smtp_port" value="<?php echo esc_attr($opts['smtp_port'] ?? 587); ?>" min="1"></td>
+                <td>
+                    <input type="number" id="smtp_port" name="smtp_port"
+                        value="<?php echo esc_attr($opts['smtp_port'] ?? 587); ?>" min="1">
+                </td>
             </tr>
+
+            <tr>
+                <th><label for="smtp_secure">Segurança</label></th>
+                <td>
+                    <select id="smtp_secure" name="smtp_secure">
+                        <?php $cur = $opts['smtp_secure'] ?? 'tls'; ?>
+                        <option value="none" <?php selected($cur, 'none'); ?>>Nenhum</option>
+                        <option value="tls" <?php selected($cur, 'tls');  ?>>TLS (STARTTLS)</option>
+                        <option value="ssl" <?php selected($cur, 'ssl');  ?>>SSL</option>
+                    </select>
+                    <p class="description">
+                        Normalmente: <strong>587</strong> com <strong>TLS</strong> (STARTTLS) ou <strong>465</strong> com <strong>SSL</strong>.
+                        Alguns provedores aceitam <strong>2525</strong> com TLS.
+                    </p>
+                </td>
+            </tr>
+
             <tr>
                 <th scope="row">Autenticação</th>
-                <td><label><input type="checkbox" name="smtp_auth" <?php checked(($opts['smtp_auth'] ?? 1), 1); ?>> Requer autenticação</label></td>
+                <td>
+                    <label>
+                        <input type="checkbox" name="smtp_auth" <?php checked(($opts['smtp_auth'] ?? 1), 1); ?>>
+                        Requer autenticação
+                    </label>
+                </td>
             </tr>
+
             <tr>
                 <th><label for="smtp_user">Usuário</label></th>
-                <td><input type="text" class="regular-text" id="smtp_user" name="smtp_user" value="<?php echo esc_attr($opts['smtp_user'] ?? ''); ?>"></td>
+                <td>
+                    <input type="text" class="regular-text" id="smtp_user" name="smtp_user"
+                        value="<?php echo esc_attr($opts['smtp_user'] ?? ''); ?>">
+                </td>
             </tr>
+
             <tr>
                 <th><label for="smtp_pass">Senha</label></th>
                 <td>
-                    <div class="enl-pass-wrap">
+                    <div class="enl-pass-wrap" style="position:relative; display:inline-block;">
                         <input type="password" class="regular-text" id="smtp_pass" name="smtp_pass"
                             value="<?php echo esc_attr($opts['smtp_pass'] ?? ''); ?>">
                         <button type="button" class="enl-toggle-pass dashicons dashicons-visibility"
-                            aria-label="Mostrar/ocultar senha"></button>
+                            aria-label="Mostrar/ocultar senha"
+                            style="position:absolute; right:8px; top:8px; border:0; background:transparent; cursor:pointer;"></button>
                     </div>
                 </td>
             </tr>
+
             <tr>
                 <th><label for="from_email">From (e-mail)</label></th>
-                <td><input type="email" class="regular-text" id="from_email" name="from_email" value="<?php echo esc_attr($opts['from_email'] ?? ''); ?>" placeholder="no-reply@seu-dominio.com"></td>
+                <td>
+                    <input type="email" class="regular-text" id="from_email" name="from_email"
+                        value="<?php echo esc_attr($opts['from_email'] ?? ''); ?>"
+                        placeholder="no-reply@seu-dominio.com">
+                </td>
             </tr>
+
             <tr>
                 <th><label for="from_name">From (nome)</label></th>
-                <td><input type="text" class="regular-text" id="from_name" name="from_name" value="<?php echo esc_attr($opts['from_name'] ?? get_bloginfo('name')); ?>"></td>
+                <td>
+                    <input type="text" class="regular-text" id="from_name" name="from_name"
+                        value="<?php echo esc_attr($opts['from_name'] ?? get_bloginfo('name')); ?>">
+                </td>
             </tr>
+
             <tr>
                 <th><label for="smtp_debug">Debug</label></th>
                 <td>
@@ -181,7 +227,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['enl_save']) && curren
             <tr>
                 <th><label for="form_html">Formulário HTML</label></th>
                 <td>
-                    <textarea id="form_html" name="form_html" rows="10" class="large-text code"><?php echo esc_textarea($opts['form_html'] ?? ''); ?></textarea>
+                    <textarea id="form_html" name="form_html" rows="10" class="large-text code"><?php
+                                                                                                echo esc_textarea($opts['form_html'] ?? '');
+                                                                                                ?></textarea>
                     <p class="description">Para inserir no site, use o shortcode <code>[easy_newsletter_form]</code> em páginas, posts ou widgets.</p>
                 </td>
             </tr>
@@ -192,3 +240,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['enl_save']) && curren
         </p>
     </form>
 </div>
+
+<script>
+    document.addEventListener('click', function(e) {
+        if (e.target && e.target.classList.contains('enl-toggle-pass')) {
+            const btn = e.target;
+            const input = document.getElementById('smtp_pass');
+            if (!input) return;
+            const isPwd = input.getAttribute('type') === 'password';
+            input.setAttribute('type', isPwd ? 'text' : 'password');
+            btn.classList.toggle('dashicons-visibility');
+            btn.classList.toggle('dashicons-hidden');
+        }
+    });
+</script>

@@ -69,4 +69,57 @@
             </tbody>
         </table>
     <?php endif; ?>
+    <?php
+    // Debug transitório do último envio (só aparece depois do POST)
+    if ($dbg = get_transient('enl_last_debug')): ?>
+        <h2 style="margin-top:24px;">🧪 Debug (temporário)</h2>
+        <table class="widefat striped" style="max-width:900px;">
+            <tbody>
+                <tr>
+                    <th style="width:220px;">Para</th>
+                    <td><?php echo esc_html($dbg['to'] ?? ''); ?></td>
+                </tr>
+                <tr>
+                    <th>Assunto</th>
+                    <td><?php echo esc_html($dbg['subject'] ?? ''); ?></td>
+                </tr>
+                <tr>
+                    <th>SMTP</th>
+                    <td>
+                        Host: <code><?php echo esc_html($dbg['host'] ?? ''); ?></code> ·
+                        Porta: <code><?php echo esc_html($dbg['port'] ?? ''); ?></code> ·
+                        Auth: <code><?php echo esc_html($dbg['auth'] ?? ''); ?></code> ·
+                        User: <code><?php echo esc_html($dbg['username'] ?? ''); ?></code> ·
+                        From: <code><?php echo esc_html($dbg['from'] ?? ''); ?></code>
+                    </td>
+                </tr>
+                <tr>
+                    <th>Resultado</th>
+                    <td><strong><?php echo esc_html($dbg['result'] ?? ''); ?></strong></td>
+                </tr>
+                <?php if (!empty($dbg['last_error'])): ?>
+                    <tr>
+                        <th>WP_Error</th>
+                        <td><code><?php echo esc_html($dbg['last_error']); ?></code></td>
+                    </tr>
+                <?php endif; ?>
+                <?php if (!empty($dbg['lines'])): ?>
+                    <tr>
+                        <th>Transcript</th>
+                        <td>
+                            <pre style="white-space:pre-wrap;word-break:break-word;margin:0;"><?php
+                                                                                                foreach ($dbg['lines'] as $ln) echo esc_html($ln) . "\n";
+                                                                                                ?></pre>
+                            <p class="description">Para transcript detalhado, ajuste “Debug” para 1 ou 2 nas Configurações SMTP.</p>
+                        </td>
+                    </tr>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    <?php
+        // apaga após exibir
+        delete_transient('enl_last_debug');
+    endif;
+    ?>
+
 </div>
