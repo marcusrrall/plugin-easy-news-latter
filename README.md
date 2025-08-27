@@ -31,3 +31,7 @@
 ```php
 [easy_newsletter_form]
 ```
+
+---
+
+Quer que eu prepare esse README também no **formato padrão WordPress.org** (com seções `== Description ==`, `== Installation ==`, etc.), caso você queira futuramente publicar o plugin no repositório oficial?

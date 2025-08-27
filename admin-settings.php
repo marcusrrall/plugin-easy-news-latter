@@ -122,7 +122,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['enl_save']) && curren
             </tr>
             <tr>
                 <th><label for="smtp_pass">Senha</label></th>
-                <td><input type="text" class="regular-text" id="smtp_pass" name="smtp_pass" value="<?php echo esc_attr($opts['smtp_pass'] ?? ''); ?>"></td>
+                <td>
+                    <div class="enl-pass-wrap">
+                        <input type="password" class="regular-text" id="smtp_pass" name="smtp_pass"
+                            value="<?php echo esc_attr($opts['smtp_pass'] ?? ''); ?>">
+                        <button type="button" class="enl-toggle-pass dashicons dashicons-visibility"
+                            aria-label="Mostrar/ocultar senha"></button>
+                    </div>
+                </td>
             </tr>
             <tr>
                 <th><label for="from_email">From (e-mail)</label></th>

@@ -7,3 +7,33 @@
 .footer-tags__list {
   gap: 6px 10px;
 }
+
+/* wrapper do campo de senha com ícone */
+.enl-pass-wrap {
+  position: relative;
+  display: inline-block; /* fica do tamanho do input */
+}
+
+/* dá espaço pro ícone dentro do input */
+.enl-pass-wrap .regular-text {
+  padding-right: 36px;
+}
+
+/* botão-olho */
+.enl-pass-wrap .enl-toggle-pass {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: #666;
+  font-size: 20px; /* tamanho do dashicon */
+  line-height: 1;
+}
+.enl-pass-wrap .enl-toggle-pass:hover {
+  color: #000;
+}
