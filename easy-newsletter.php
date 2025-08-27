@@ -35,6 +35,7 @@ class ENL_Plugin
         add_action('transition_post_status', [$this, 'maybe_send_on_publish'], 10, 3);
 
         add_action('admin_post_enl_send_test', [$this, 'admin_send_test']);
+        add_action('admin_post_enl_send_single', [$this, 'admin_send_single']);
     }
 
     /** Ativação: cria tabela e opções */
@@ -78,6 +79,14 @@ class ENL_Plugin
         add_menu_page('Easy Newsletter', 'Easy Newsletter', 'manage_options', 'easy-newsletter', [$this, 'admin_list_page'], $icon, 60);
         add_submenu_page('easy-newsletter', 'Inscritos', 'Inscritos', 'manage_options', 'easy-newsletter', [$this, 'admin_list_page']);
         add_submenu_page('easy-newsletter', 'Configurações SMTP', 'Configurações', 'manage_options', 'easy-newsletter-settings', [$this, 'admin_settings_page']);
+        add_submenu_page(
+            'easy-newsletter',
+            'Verificar Envio',
+            'Verificar Envio',
+            'manage_options',
+            'easy-newsletter-verify',
+            [$this, 'admin_verify_page']
+        );
     }
 
     /** Assets admin */
@@ -116,6 +125,46 @@ class ENL_Plugin
     {
         require __DIR__ . '/admin-settings.php';
     }
+
+    /** Envia último post para UM e-mail (botão por linha) */
+    public function admin_send_single()
+    {
+        if (!current_user_can('manage_options')) wp_die('Sem permissão');
+        check_admin_referer('enl_send_single');
+
+        $email = isset($_POST['email']) ? sanitize_email($_POST['email']) : '';
+        if (!$email || !is_email($email)) {
+            wp_safe_redirect(add_query_arg('enl_msg', 'bad_email', admin_url('admin.php?page=easy-newsletter')));
+            exit;
+        }
+
+        // último post publicado$msg = $result ? 'sent_test' : 'send_fail';
+        $q = new WP_Query([
+            'post_type' => 'post',
+            'posts_per_page' => 1,
+            'post_status' => 'publish',
+            'orderby' => 'date',
+            'order' => 'DESC'
+        ]);
+        if (!$q->have_posts()) {
+            wp_safe_redirect(add_query_arg('enl_msg', 'no_posts', admin_url('admin.php?page=easy-newsletter')));
+            exit;
+        }
+        $q->the_post();
+        $post_id = get_the_ID();
+        wp_reset_postdata();
+
+        $ok = $this->send_to_all_subscribers($post_id, $email); // envia só para 1
+        $msg = $ok ? 'sent_single' : 'send_fail';
+        wp_safe_redirect(add_query_arg('enl_msg', $msg, admin_url('admin.php?page=easy-newsletter')));
+        exit;
+    }
+
+    public function admin_verify_page()
+    {
+        require __DIR__ . '/admin-verify.php';
+    }
+
 
     /** Shortcode: renderiza o formulário salvo (ou fallback) */
     public function shortcode_form()
@@ -396,9 +445,10 @@ class ENL_Plugin
         wp_reset_postdata();
 
         // Envia somente para o e-mail de teste
-        $result = $this->send_to_all_subscribers($post_id, $test_email); // <-- ajustado para aceitar alvo único
+        $result = $this->send_to_all_subscribers($post_id, $test_email);
         $msg = $result ? 'sent_test' : 'send_fail';
-        wp_safe_redirect(add_query_arg('enl_msg', $msg, admin_url('admin.php?page=easy-newsletter')));
+        $referer = wp_get_referer() ?: admin_url('admin.php?page=easy-newsletter');
+        wp_safe_redirect(add_query_arg('enl_msg', $msg, $referer));
         exit;
     }
 
