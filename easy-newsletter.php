@@ -3,7 +3,7 @@
 /**
  * Plugin Name: Easy Newsletter
  * Description: Captura e-mails, envia automaticamente o post mais recente, gerencia inscritos, descadastro por link e configura SMTP (PHPMailer).
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: Web Rall
  * Text Domain: easy-newsletter
  */
@@ -14,6 +14,10 @@ class ENL_Plugin
     const TABLE = 'enl_subscribers';
     const OPT   = 'enl_smtp_options';
     const NONCE = 'enl_nonce';
+
+    /** Propriedades usadas para embutir a imagem destacada (CID) no envio */
+    private $embed_cid  = null;
+    private $embed_path = null;
 
     public function __construct()
     {
@@ -31,10 +35,11 @@ class ENL_Plugin
         // Shortcode do formulário
         add_shortcode('easy_newsletter_form', [$this, 'shortcode_form']);
 
-        // ⏩ Enviar automaticamente quando um post virar "publicado" (inclui agendados)
+        // Enviar automaticamente quando um post publicar (inclui agendados)
         add_action('transition_post_status', [$this, 'maybe_send_on_publish'], 10, 3);
 
-        add_action('admin_post_enl_send_test', [$this, 'admin_send_test']);
+        // Ações admin
+        add_action('admin_post_enl_send_test',   [$this, 'admin_send_test']);
         add_action('admin_post_enl_send_single', [$this, 'admin_send_single']);
     }
 
@@ -67,7 +72,7 @@ class ENL_Plugin
                 'smtp_pass'  => '',
                 'from_email' => '',
                 'from_name'  => get_bloginfo('name'),
-                'form_html'  => '', // HTML do formulário
+                'form_html'  => '',
             ]);
         }
     }
@@ -79,14 +84,7 @@ class ENL_Plugin
         add_menu_page('Easy Newsletter', 'Easy Newsletter', 'manage_options', 'easy-newsletter', [$this, 'admin_list_page'], $icon, 60);
         add_submenu_page('easy-newsletter', 'Inscritos', 'Inscritos', 'manage_options', 'easy-newsletter', [$this, 'admin_list_page']);
         add_submenu_page('easy-newsletter', 'Configurações SMTP', 'Configurações', 'manage_options', 'easy-newsletter-settings', [$this, 'admin_settings_page']);
-        add_submenu_page(
-            'easy-newsletter',
-            'Verificar Envio',
-            'Verificar Envio',
-            'manage_options',
-            'easy-newsletter-verify',
-            [$this, 'admin_verify_page']
-        );
+        add_submenu_page('easy-newsletter', 'Verificar Envio', 'Verificar Envio', 'manage_options', 'easy-newsletter-verify', [$this, 'admin_verify_page']);
     }
 
     /** Assets admin */
@@ -126,6 +124,12 @@ class ENL_Plugin
         require __DIR__ . '/admin-settings.php';
     }
 
+    /** Página: verificar envio / debug */
+    public function admin_verify_page()
+    {
+        require __DIR__ . '/admin-verify.php';
+    }
+
     /** Envia último post para UM e-mail (botão por linha) */
     public function admin_send_single()
     {
@@ -138,13 +142,13 @@ class ENL_Plugin
             exit;
         }
 
-        // último post publicado$msg = $result ? 'sent_test' : 'send_fail';
+        // último post publicado
         $q = new WP_Query([
-            'post_type' => 'post',
+            'post_type'      => 'post',
             'posts_per_page' => 1,
-            'post_status' => 'publish',
-            'orderby' => 'date',
-            'order' => 'DESC'
+            'post_status'    => 'publish',
+            'orderby'        => 'date',
+            'order'          => 'DESC'
         ]);
         if (!$q->have_posts()) {
             wp_safe_redirect(add_query_arg('enl_msg', 'no_posts', admin_url('admin.php?page=easy-newsletter')));
@@ -154,17 +158,11 @@ class ENL_Plugin
         $post_id = get_the_ID();
         wp_reset_postdata();
 
-        $ok = $this->send_to_all_subscribers($post_id, $email); // envia só para 1
+        $ok = $this->send_to_all_subscribers($post_id, $email); // apenas 1 destino
         $msg = $ok ? 'sent_single' : 'send_fail';
         wp_safe_redirect(add_query_arg('enl_msg', $msg, admin_url('admin.php?page=easy-newsletter')));
         exit;
     }
-
-    public function admin_verify_page()
-    {
-        require __DIR__ . '/admin-verify.php';
-    }
-
 
     /** Shortcode: renderiza o formulário salvo (ou fallback) */
     public function shortcode_form()
@@ -239,28 +237,26 @@ class ENL_Plugin
         }
     }
 
-    /**
-     * Dispara quando status do post muda para "publish".
-     * Envia o post recém-publicado para todos inscritos ativos.
-     */
+    /** Dispara quando status do post muda para "publish" */
     public function maybe_send_on_publish($new_status, $old_status, $post)
     {
-        if ($new_status !== 'publish' || $old_status === 'publish') return; // só primeira publicação
+        if ($new_status !== 'publish' || $old_status === 'publish') return; // só na primeira publicação
         if ($post->post_type !== 'post') return;
 
         $this->send_to_all_subscribers($post->ID);
     }
 
-    /** Dispara e-mail com o post informado.
-     *  - Se $only_email for informado, envia só para ele (modo teste)
-     *  - Registra log do envio (total/ok/falha)
+    /**
+     * Envia o post informado para todos os inscritos ativos.
+     * - Se $only_email for informado, envia só para ele (modo teste/linha).
+     * - Registra log do envio (total/ok/falha).
      */
     private function send_to_all_subscribers($post_id, $only_email = null)
     {
         global $wpdb;
         $table = $wpdb->prefix . self::TABLE;
 
-        // Monta lista de destino
+        // Destinatários
         if ($only_email) {
             $recipients = [sanitize_email($only_email)];
         } else {
@@ -268,26 +264,43 @@ class ENL_Plugin
         }
         if (!$recipients) return false;
 
-        // Post e conteúdo
+        // Post
         $post = get_post($post_id);
         if (!$post || $post->post_status !== 'publish') return false;
 
-        $site    = get_bloginfo('name');
-        $subject = '[' . $site . '] ' . $post->post_title;
-
-        // Texto do corpo: usa seu template padrão que você já tem
-        // Reaproveite seu código existente de construção do body se preferir.
-        $excerpt = has_excerpt($post) ? wp_strip_all_tags(get_the_excerpt($post)) : wp_trim_words(wp_strip_all_tags($post->post_content), 28);
+        $site      = get_bloginfo('name');
+        $subject   = '[' . $site . '] ' . $post->post_title;
+        $excerpt   = has_excerpt($post) ? wp_strip_all_tags(get_the_excerpt($post)) : wp_trim_words(wp_strip_all_tags($post->post_content), 40);
         $permalink = get_permalink($post);
-        $body = '<html><body style="font-family:Arial,Helvetica,sans-serif;color:#111;line-height:1.5;">'
-            . '<h2 style="margin:0 0 12px 0;">' . esc_html($post->post_title) . '</h2>'
-            . '<p style="margin:0 0 12px 0;">' . esc_html($excerpt) . '</p>'
-            . '<p style="margin:16px 0;"><a href="' . esc_url($permalink) . '" style="background:#111;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">Ler no ' . esc_html($site) . '</a></p>'
-            . '<hr style="border:0;border-top:1px solid #eee;margin:20px 0;">'
-            . '<p style="font-size:12px;color:#6b7280;margin:0;">Se não quiser mais receber, acesse seu e-mail cadastrado na newsletter e clique em descadastrar.</p>'
-            . '</body></html>';
 
-        // Envia um a um com wp_mail e coleta resultados
+        // Imagem destacada (gera CID se possível)
+        $image = '';
+        $this->embed_cid  = null;
+        $this->embed_path = null;
+        if (has_post_thumbnail($post->ID)) {
+            $image_url = get_the_post_thumbnail_url($post->ID, 'full');
+            $attach_id = get_post_thumbnail_id($post->ID);
+            $file_path = $attach_id ? get_attached_file($attach_id) : '';
+            if ($file_path && file_exists($file_path)) {
+                $this->embed_cid  = 'enl_featured_' . md5($file_path);
+                $this->embed_path = $file_path;
+                $image = 'cid:' . $this->embed_cid;
+            } else {
+                $image = $image_url ?: '';
+            }
+        }
+
+        // Corpo (sem link de descadastro individual)
+        $body = $this->render_email_html([
+            'site'       => $site,
+            'title'      => $post->post_title,
+            'excerpt'    => $excerpt,
+            'permalink'  => $permalink,
+            'image'      => $image,
+            'unsubscribe' => null,
+        ]);
+
+        // Envia e coleta resultados
         $ok = 0;
         $fail = 0;
         $fail_list = [];
@@ -316,25 +329,43 @@ class ENL_Plugin
         return ($ok > 0);
     }
 
-    /** Envia um post específico para um e-mail */
+    /** Envia um post específico para um e-mail (com link de descadastro) */
     private function send_post_to($email, $token, $post_id)
     {
         $post = get_post($post_id);
         if (!$post || $post->post_status !== 'publish' || $post->post_type !== 'post') return false;
 
-        $title     = get_the_title($post);
-        $permalink = get_permalink($post);
-        $excerpt   = has_excerpt($post) ? wp_strip_all_tags(get_the_excerpt($post)) : wp_trim_words(wp_strip_all_tags($post->post_content), 28);
-        $site      = get_bloginfo('name');
+        $title      = get_the_title($post);
+        $permalink  = get_permalink($post);
+        $excerpt    = has_excerpt($post) ? wp_strip_all_tags(get_the_excerpt($post)) : wp_trim_words(wp_strip_all_tags($post->post_content), 40);
+        $site       = get_bloginfo('name');
         $unsubscribe = esc_url(add_query_arg(['enl_unsub' => $token, 'email' => rawurlencode($email)], home_url('/')));
 
-        $body = '<html><body style="font-family:Arial,Helvetica,sans-serif;color:#111;line-height:1.5;">'
-            . '<h2 style="margin:0 0 12px 0;">' . esc_html($title) . '</h2>'
-            . '<p style="margin:0 0 12px 0;">' . esc_html($excerpt) . '</p>'
-            . '<p style="margin:16px 0;"><a href="' . esc_url($permalink) . '" style="background:#111;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">Ler no ' . esc_html($site) . '</a></p>'
-            . '<hr style="border:0;border-top:1px solid #eee;margin:20px 0;">'
-            . '<p style="font-size:12px;color:#6b7280;margin:0;">Se não quiser mais receber, <a href="' . $unsubscribe . '">clique para descadastrar</a>.</p>'
-            . '</body></html>';
+        // Imagem destacada (gera CID se possível)
+        $image = '';
+        $this->embed_cid  = null;
+        $this->embed_path = null;
+        if (has_post_thumbnail($post->ID)) {
+            $image_url = get_the_post_thumbnail_url($post->ID, 'full');
+            $attach_id = get_post_thumbnail_id($post->ID);
+            $file_path = $attach_id ? get_attached_file($attach_id) : '';
+            if ($file_path && file_exists($file_path)) {
+                $this->embed_cid  = 'enl_featured_' . md5($file_path);
+                $this->embed_path = $file_path;
+                $image = 'cid:' . $this->embed_cid;
+            } else {
+                $image = $image_url ?: '';
+            }
+        }
+
+        $body = $this->render_email_html([
+            'site'       => $site,
+            'title'      => $title,
+            'excerpt'    => $excerpt,
+            'permalink'  => $permalink,
+            'image'      => $image,
+            'unsubscribe' => $unsubscribe,
+        ]);
 
         $subject = '[' . $site . '] ' . $title;
         return $this->smtp_send($email, $subject, $body);
@@ -357,6 +388,54 @@ class ENL_Plugin
         wp_reset_postdata();
 
         return $this->send_post_to($email, $token, $post_id);
+    }
+
+    /** Template de e-mail (HTML inline, com imagem opcional e CTA) */
+    private function render_email_html($args)
+    {
+        $site        = $args['site'] ?? get_bloginfo('name');
+        $title       = $args['title'] ?? '';
+        $excerpt     = $args['excerpt'] ?? '';
+        $permalink   = $args['permalink'] ?? '#';
+        $image       = $args['image'] ?? '';
+        $unsubscribe = $args['unsubscribe'] ?? null;
+
+        $image_tag = '';
+        if (!empty($image)) {
+            $image_tag = '<tr><td style="padding:0 24px 16px 24px">
+                <img src="' . esc_attr($image) . '" width="552" alt="" style="display:block;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;border-radius:10px;width:100%;max-width:552px;height:auto;">
+            </td></tr>';
+        }
+
+        $footer = $unsubscribe
+            ? 'Se não quiser mais receber, <a href="' . esc_url($unsubscribe) . '" style="color:#6b7280">clique para descadastrar</a>.'
+            : 'Se não quiser mais receber estes e-mails, responda esta mensagem ou gerencie sua inscrição no site.';
+
+        $html = '<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>img{border:0;outline:none;text-decoration:none;}@media (max-width:620px){.container{width:100%!important;}}</style>
+</head><body style="margin:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f3f4f6;padding:24px 12px;">
+<tr><td align="center">
+  <table class="container" role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:100%;max-width:600px;background:#fff;border-radius:14px;overflow:hidden;">
+    <tr><td style="background:#111;color:#fff;padding:14px 24px;font-size:16px;font-weight:700;">' . esc_html($site) . '</td></tr>
+    ' . $image_tag . '
+    <tr><td style="padding:0 24px 8px 24px">
+      <h1 style="margin:0 0 8px 0;font-size:22px;line-height:1.25;">' . esc_html($title) . '</h1>
+    </td></tr>
+    <tr><td style="padding:0 24px 20px 24px;font-size:16px;color:#111;line-height:1.6;">' . esc_html($excerpt) . '</td></tr>
+    <tr><td style="padding:0 24px 28px 24px">
+      <a href="' . esc_url($permalink) . '" style="display:inline-block;background:#111;color:#fff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:600;">Ler no ' . esc_html($site) . '</a>
+    </td></tr>
+    <tr><td style="padding:0 24px 24px 24px">
+      <hr style="border:0;border-top:1px solid #e5e7eb;margin:0 0 16px 0;">
+      <p style="margin:0;font-size:12px;color:#6b7280;">' . $footer . '</p>
+    </td></tr>
+  </table>
+</td></tr>
+</table>
+</body></html>';
+
+        return $html;
     }
 
     /** Envio SMTP usando PHPMailer (com debug transitório para a tela Verify) */
@@ -425,7 +504,17 @@ class ENL_Plugin
                 );
             }
 
-            // Nível de debug (0,1,2) vindo das Configs
+            // Embute a imagem destacada, se disponível
+            if (!empty($this->embed_path) && !empty($this->embed_cid) && file_exists($this->embed_path)) {
+                $mime = function_exists('mime_content_type') ? mime_content_type($this->embed_path) : 'image/jpeg';
+                try {
+                    $phpmailer->AddEmbeddedImage($this->embed_path, $this->embed_cid, basename($this->embed_path), 'base64', $mime);
+                } catch (\Exception $e) {
+                    $debug_lines[] = 'embed_error → ' . $e->getMessage();
+                }
+            }
+
+            // Debug do SMTP (0,1,2) vindo das Configs
             $phpmailer->SMTPDebug   = (int)($opts['smtp_debug'] ?? 0);
             $phpmailer->Debugoutput = function ($str, $level) use (&$debug_lines) {
                 $debug_lines[] = trim($str);
@@ -439,11 +528,14 @@ class ENL_Plugin
         // 5) Dispara
         $ok = wp_mail($email, $subject, $body, $headers);
 
-        // 6) Limpa hooks para não vazar
+        // 6) Limpa hooks e estado
         remove_action('phpmailer_init', $phpmailer_hook);
         remove_action('wp_mail_failed', $failed_hook, 10);
         remove_filter('wp_mail_from', $from_filter, 999);
         remove_filter('wp_mail_from_name', $name_filter, 999);
+
+        $this->embed_cid  = null;
+        $this->embed_path = null;
 
         // 7) Monta resumo das configs para debug (mascara usuário)
         $mask = function ($s) {
@@ -472,7 +564,6 @@ class ENL_Plugin
         return $ok;
     }
 
-
     /** Exporta CSV (apenas ativos) */
     public function export_csv()
     {
@@ -491,7 +582,6 @@ class ENL_Plugin
         fclose($out);
         exit;
     }
-
 
     /** Trata o envio de teste a partir do admin */
     public function admin_send_test()
@@ -514,7 +604,7 @@ class ENL_Plugin
             'order'          => 'DESC'
         ]);
         if (!$q->have_posts()) {
-            wp_safe_redirect(add_query_arg('enl_msg', 'no_posts', admin_url('admin.php?page=easy-newsletter')));
+            wp_safe_redirect(add_query_arg('enl_msg', 'no_posts', admin_url('admin.php?page=easy-newsletter-verify')));
             exit;
         }
         $q->the_post();
@@ -522,9 +612,9 @@ class ENL_Plugin
         wp_reset_postdata();
 
         // Envia somente para o e-mail de teste
-        $result = $this->send_to_all_subscribers($post_id, $test_email);
-        $msg = $result ? 'sent_test' : 'send_fail';
-        $referer = wp_get_referer() ?: admin_url('admin.php?page=easy-newsletter');
+        $result  = $this->send_to_all_subscribers($post_id, $test_email);
+        $msg     = $result ? 'sent_test' : 'send_fail';
+        $referer = wp_get_referer() ?: admin_url('admin.php?page=easy-newsletter-verify');
         wp_safe_redirect(add_query_arg('enl_msg', $msg, $referer));
         exit;
     }
@@ -532,12 +622,6 @@ class ENL_Plugin
     /** Registra log do último envio (para teste e para envios reais) */
     private function log_send_result($args)
     {
-        // $args: [
-        //   'post_id' => int, 'subject' => string,
-        //   'total' => int, 'ok' => int, 'fail' => int,
-        //   'fail_list' => array(email => error_string),
-        //   'target' => 'all'|'test',
-        // ]
         $log = [
             'time'       => current_time('mysql'),
             'post_id'    => (int)($args['post_id'] ?? 0),
