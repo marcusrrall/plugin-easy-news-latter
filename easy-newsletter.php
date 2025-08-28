@@ -2,27 +2,34 @@
 
 /**
  * Plugin Name: Easy Newsletter
- * Description: Captura e-mails, envia automaticamente o post mais recente, gerencia inscritos, descadastro por link e configura SMTP (PHPMailer).
- * Version: 1.2.1
+ * Description: Captura e-mails, envia automaticamente o post mais recente, gerencia inscritos, descadastro por link e configura SMTP (PHPMailer). Envio em lotes via WP-Cron e template com imagem destacada (inline CID).
+ * Version: 1.2.2
  * Author: Web Rall
  * Text Domain: easy-newsletter
  */
+
 if (!defined('ABSPATH')) exit;
 
-define('ENL_VERSION', '1.2.1');
+define('ENL_VERSION', '1.2.2');
 define('ENL_PATH', plugin_dir_path(__FILE__));
 define('ENL_URL',  plugin_dir_url(__FILE__));
 
 require_once ENL_PATH . 'includes/ENL_Template.php';
 require_once ENL_PATH . 'includes/ENL_Mailer.php';
 
+/**
+ * Núcleo do plugin (admin, rotas, hooks, jobs)
+ */
 class ENL_Plugin
 {
+    /** Nome da tabela de inscritos (sem prefixo). */
     const TABLE = 'enl_subscribers';
+    /** Option key das configurações SMTP e afins. */
     const OPT   = 'enl_smtp_options';
+    /** Nonce base para ações AJAX. */
     const NONCE = 'enl_nonce';
 
-    /** @var ENL_Mailer */
+    /** @var ENL_Mailer Responsável por montar e enviar e-mails. */
     private $mailer;
 
     public function __construct()
@@ -35,20 +42,33 @@ class ENL_Plugin
         add_action('admin_enqueue_scripts', [$this, 'admin_assets']);
         add_action('wp_enqueue_scripts',    [$this, 'public_assets']);
 
+        // AJAX público/privado para inscrição
         add_action('wp_ajax_enl_subscribe',        [$this, 'ajax_subscribe']);
         add_action('wp_ajax_nopriv_enl_subscribe', [$this, 'ajax_subscribe']);
-        add_action('init',                          [$this, 'handle_unsubscribe']);
-        add_action('admin_post_enl_export_csv',     [$this, 'export_csv']);
 
+        // Descadastro por link
+        add_action('init', [$this, 'handle_unsubscribe']);
+
+        // Exportação CSV
+        add_action('admin_post_enl_export_csv', [$this, 'export_csv']);
+
+        // Shortcode do formulário
         add_shortcode('easy_newsletter_form', [$this, 'shortcode_form']);
 
+        // Dispara quando um post vira "publish" (inclui agendados)
         add_action('transition_post_status', [$this, 'maybe_send_on_publish'], 10, 3);
 
+        // Ações dos botões no admin
         add_action('admin_post_enl_send_test',   [$this, 'admin_send_test']);
         add_action('admin_post_enl_send_single', [$this, 'admin_send_single']);
+
+        // Job de envio em lotes via WP-Cron
+        add_action('enl_send_batch', [$this, 'cron_send_batch'], 10, 2);
     }
 
-    /** Ativação */
+    /**
+     * Ativação: cria tabela de inscritos e option de configurações.
+     */
     public function activate()
     {
         global $wpdb;
@@ -69,29 +89,35 @@ class ENL_Plugin
 
         if (!get_option(self::OPT)) {
             add_option(self::OPT, [
-                'smtp_debug' => 0,
+                'smtp_debug' => 0,    // 0,1,2
                 'smtp_host'  => '',
-                'smtp_port'  => 587,
+                'smtp_port'  => 587,  // 465=ssl, 587=tls
                 'smtp_auth'  => 1,
                 'smtp_user'  => '',
                 'smtp_pass'  => '',
                 'from_email' => '',
                 'from_name'  => get_bloginfo('name'),
                 'form_html'  => '',
+                // Você pode futuramente incluir: batch_size, batch_delay, timeout, etc.
             ]);
         }
     }
 
-    /** Menu admin */
+    /**
+     * Registra páginas no Admin.
+     */
     public function admin_menu()
     {
         $icon = 'dashicons-email-alt';
         add_menu_page('Easy Newsletter', 'Easy Newsletter', 'manage_options', 'easy-newsletter', [$this, 'admin_list_page'], $icon, 60);
-        add_submenu_page('easy-newsletter', 'Inscritos',         'Inscritos',       'manage_options', 'easy-newsletter',          [$this, 'admin_list_page']);
-        add_submenu_page('easy-newsletter', 'Configurações SMTP', 'Configurações',   'manage_options', 'easy-newsletter-settings', [$this, 'admin_settings_page']);
-        add_submenu_page('easy-newsletter', 'Verificar Envio',   'Verificar Envio', 'manage_options', 'easy-newsletter-verify',   [$this, 'admin_verify_page']);
+        add_submenu_page('easy-newsletter', 'Inscritos',          'Inscritos',        'manage_options', 'easy-newsletter',           [$this, 'admin_list_page']);
+        add_submenu_page('easy-newsletter', 'Configurações SMTP', 'Configurações',    'manage_options', 'easy-newsletter-settings',  [$this, 'admin_settings_page']);
+        add_submenu_page('easy-newsletter', 'Verificar Envio',    'Verificar Envio',  'manage_options', 'easy-newsletter-verify',    [$this, 'admin_verify_page']);
     }
 
+    /**
+     * CSS/JS do admin.
+     */
     public function admin_assets($hook)
     {
         if (strpos($hook, 'easy-newsletter') === false) return;
@@ -99,6 +125,9 @@ class ENL_Plugin
         wp_enqueue_script('enl-admin', ENL_URL . 'assets/admin.js', ['jquery'], ENL_VERSION, true);
     }
 
+    /**
+     * JS público (formulário AJAX).
+     */
     public function public_assets()
     {
         wp_register_script('enl-public', ENL_URL . 'public/subscribe.js', [], ENL_VERSION, true);
@@ -115,7 +144,7 @@ class ENL_Plugin
         wp_enqueue_script('enl-public');
     }
 
-    /** Páginas */
+    /** Carrega páginas do admin. */
     public function admin_list_page()
     {
         require ENL_PATH . 'admin-list.php';
@@ -129,7 +158,9 @@ class ENL_Plugin
         require ENL_PATH . 'admin-verify.php';
     }
 
-    /** Shortcode do formulário */
+    /**
+     * Shortcode [easy_newsletter_form] - renderiza o HTML salvo ou um fallback.
+     */
     public function shortcode_form()
     {
         $opts = get_option(self::OPT, []);
@@ -146,7 +177,9 @@ class ENL_Plugin
         return $html;
     }
 
-    /** AJAX: cadastro + envio do último post */
+    /**
+     * AJAX: inscreve/reativa e envia o post mais recente para o novo e-mail.
+     */
     public function ajax_subscribe()
     {
         check_ajax_referer(self::NONCE, 'nonce');
@@ -159,7 +192,7 @@ class ENL_Plugin
         global $wpdb;
         $table = $wpdb->prefix . self::TABLE;
 
-        $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE email=%s", $email));
+        $row   = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE email=%s", $email));
         $token = wp_generate_password(32, false, false);
 
         if ($row) {
@@ -175,7 +208,9 @@ class ENL_Plugin
             : wp_send_json_error(['message' => 'error', 'error' => $sent]);
     }
 
-    /** Descadastro por link */
+    /**
+     * Descadastro por link (?enl_unsub=TOKEN&email=...).
+     */
     public function handle_unsubscribe()
     {
         if (!isset($_GET['enl_unsub'], $_GET['email'])) return;
@@ -193,14 +228,63 @@ class ENL_Plugin
         }
     }
 
-    /** Auto envio no publish */
-    public function maybe_send_on_publish($new, $old, $post)
+    /**
+     * Ao publicar um post, agenda o job inicial para envio em lotes.
+     */
+    public function maybe_send_on_publish($new_status, $old_status, $post)
     {
-        if ($new !== 'publish' || $old === 'publish' || $post->post_type !== 'post') return;
-        $this->send_to_all_subscribers($post->ID);
+        if ($new_status !== 'publish' || $old_status === 'publish') return;
+        if ($post->post_type !== 'post') return;
+
+        if (!wp_next_scheduled('enl_send_batch', ['post_id' => $post->ID, 'offset' => 0])) {
+            wp_schedule_single_event(time() + 10, 'enl_send_batch', ['post_id' => $post->ID, 'offset' => 0]); // start em 10s
+        }
     }
 
-    /** Envelopes → Mailer */
+    /**
+     * Job de lote: envia N e-mails por execução e re-agenda até terminar.
+     *
+     * @param int $post_id ID do post a enviar.
+     * @param int $offset  Posição na lista de inscritos.
+     */
+    public function cron_send_batch($post_id, $offset = 0)
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . self::TABLE;
+
+        // Tamanho do lote — ajuste conforme servidor / limite do SMTP
+        $limit = 200;
+
+        $emails = $wpdb->get_col($wpdb->prepare(
+            "SELECT email FROM $table WHERE status='active' ORDER BY id ASC LIMIT %d OFFSET %d",
+            $limit,
+            (int)$offset
+        ));
+        if (empty($emails)) {
+            return; // acabou
+        }
+
+        // envia este bloco e guarda um "last log" (opcionalmente você pode acumular)
+        $this->mailer->send_post_to_many($emails, (int)$post_id, function ($payload) {
+            update_option('enl_last_log', [
+                'time'       => current_time('mysql'),
+                'post_id'    => (int)($payload['post_id'] ?? 0),
+                'subject'    => (string)($payload['subject'] ?? ''),
+                'total'      => (int)($payload['total'] ?? 0),
+                'ok'         => (int)($payload['ok'] ?? 0),
+                'fail'       => (int)($payload['fail'] ?? 0),
+                'fail_list'  => (array)($payload['fail_list'] ?? []),
+                'target'     => 'cron',
+            ], false);
+        });
+
+        // agenda o próximo lote
+        $next_offset = (int)$offset + $limit;
+        wp_schedule_single_event(time() + 5, 'enl_send_batch', ['post_id' => (int)$post_id, 'offset' => $next_offset]);
+    }
+
+    /* ---------- Encaminhadores p/ Mailer ---------- */
+
     private function send_to_all_subscribers($post_id, $only_email = null)
     {
         return $this->mailer->send_to_all_subscribers($post_id, $only_email, function ($payload) {
@@ -216,7 +300,9 @@ class ENL_Plugin
         return $this->mailer->send_latest_post_to($email, $token);
     }
 
-    /** Exporta CSV (ativos) */
+    /**
+     * Exporta CSV dos inscritos ativos.
+     */
     public function export_csv()
     {
         if (!current_user_can('manage_options')) wp_die('Sem permissão');
@@ -235,7 +321,9 @@ class ENL_Plugin
         exit;
     }
 
-    /** Handler do botão “enviar para um” */
+    /**
+     * Botão "Enviar último post para" (uma linha da lista).
+     */
     public function admin_send_single()
     {
         if (!current_user_can('manage_options')) wp_die('Sem permissão');
@@ -262,7 +350,9 @@ class ENL_Plugin
         exit;
     }
 
-    /** Envio de teste (fica na página Verificar Envio) */
+    /**
+     * Botão "Enviar último post (teste)" na tela Verificar Envio.
+     */
     public function admin_send_test()
     {
         if (!current_user_can('manage_options')) wp_die('Sem permissão');
@@ -287,7 +377,9 @@ class ENL_Plugin
         exit;
     }
 
-    /** Log de envio (mantém sua estrutura) */
+    /**
+     * Salva o último log de envio (para exibir na UI).
+     */
     private function log_send_result($args)
     {
         $log = [
