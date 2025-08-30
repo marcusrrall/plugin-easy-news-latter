@@ -16,6 +16,9 @@ define('ENL_URL',  plugin_dir_url(__FILE__));
 
 require_once ENL_PATH . 'includes/ENL_Template.php';
 require_once ENL_PATH . 'includes/ENL_Mailer.php';
+require_once ENL_PATH . 'includes/ENL_Security.php';
+
+ENL_Security::init();
 
 /**
  * Núcleo do plugin (admin, rotas, hooks, jobs)
@@ -159,30 +162,118 @@ class ENL_Plugin
     }
 
     /**
-     * Shortcode [easy_newsletter_form] - renderiza o HTML salvo ou um fallback.
+     * Shortcode [easy_newsletter_form] - renderiza o HTML salvo ou um fallback,
+     * e injeta campos de segurança (nonce, action, honeypot e captcha hook).
      */
     public function shortcode_form()
     {
         $opts = get_option(self::OPT, []);
         $html = html_entity_decode(wp_unslash($opts['form_html'] ?? ''), ENT_QUOTES, 'UTF-8');
 
+        // === 1) Monta o bloco de segurança que precisa existir dentro do <form> ===
+        // Importante: alinhar com o handler (action=self::NONCE, field='nonce')
+        $nonce = wp_nonce_field(self::NONCE, 'nonce', true, false);
+
+        // captcha render (capturado por buffer)
+        ob_start();
+        do_action('enl_render_captcha'); // outro plugin pode imprimir aqui
+        $captcha = ob_get_clean();
+
+        $securityBlock = $nonce . "\n" .
+            '<input type="hidden" name="action" value="enl_subscribe" />' . "\n" .
+            // Honeypot
+            '<div style="position:absolute; left:-9999px;" aria-hidden="true">' .
+            '<label>Deixe este campo vazio</label>' .
+            '<input type="text" name="enl_hp" tabindex="-1" autocomplete="off" />' .
+            '</div>' . "\n" .
+            // Captcha hook
+            '<div class="enl-captcha">' . $captcha . '</div>';
+
+        // === 2) Se não houver HTML salvo, usa fallback já correto ===
         if (!trim($html)) {
-            $html = '<form class="newsletter-form d-flex gap-2 mt-3" action="#" method="post">
-  <label for="nl-email" class="visually-hidden">Seu e-mail</label>
-  <input id="nl-email" type="email" class="form-control" placeholder="Digite seu e-mail" required />
-  <button type="submit" class="btn btn-warning"><i class="bi bi-send-fill"></i></button>
-</form>
-<div class="nl-feedback small mt-2"></div>';
+            $action = esc_url(admin_url('admin-ajax.php'));
+            $html = '<form class="newsletter-form d-flex gap-2 mt-3" action="' . $action . '" method="post">'
+                . $nonce
+                . '<input type="hidden" name="action" value="enl_subscribe" />'
+                . '<label for="nl-email" class="visually-hidden">Seu e-mail</label>'
+                // IMPORTANTE: name="email" para o handler encontrar
+                . '<input id="nl-email" type="email" name="email" class="form-control" placeholder="Digite seu e-mail" required />'
+                // Honeypot
+                . '<div style="position:absolute; left:-9999px;" aria-hidden="true"><label>Deixe este campo vazio</label><input type="text" name="enl_hp" tabindex="-1" autocomplete="off" /></div>'
+                // Captcha hook
+                . '<div class="enl-captcha">' . $captcha . '</div>'
+                . '<button type="submit" class="btn btn-warning"><i class="bi bi-send-fill"></i></button>'
+                . '</form>'
+                . '<div class="nl-feedback small mt-2"></div>';
+
+            return $html;
         }
+
+        // === 3) Para HTML customizado salvo nas opções, garantimos:
+        // - existe um <form>?
+        // - action aponta para admin-ajax.php?
+        // - method="post"?
+        // - injetamos $securityBlock antes de </form>
+
+        // Se não tem <form>, envolve o HTML num form válido
+        if (stripos($html, '<form') === false) {
+            $action = esc_url(admin_url('admin-ajax.php'));
+            $html = '<form class="newsletter-form" action="' . $action . '" method="post">' . $html . '</form>';
+        }
+
+        // Garante action e method no <form ...>
+        // action
+        if (!preg_match('/<form[^>]*\baction\s*=\s*["\'].*?["\']/i', $html)) {
+            $html = preg_replace(
+                '/<form\b/i',
+                '<form action="' . esc_url(admin_url('admin-ajax.php')) . '"',
+                $html,
+                1
+            );
+        }
+        // method
+        if (!preg_match('/<form[^>]*\bmethod\s*=\s*["\']post["\']/i', $html)) {
+            if (preg_match('/(<form[^>]*)(>)/i', $html, $m)) {
+                $withMethod = preg_replace('/<form\b/i', '<form method="post"', $m[0], 1);
+                $html = str_replace($m[0], $withMethod, $html);
+            }
+        }
+
+        // Injeta o bloco de segurança antes do </form> (se já não estiver presente)
+        if (stripos($html, 'name="nonce"') === false && stripos($html, 'name="action" value="enl_subscribe"') === false) {
+            if (stripos($html, '</form>') !== false) {
+                $html = preg_replace('/<\/form>/i', $securityBlock . '</form>', $html, 1);
+            } else {
+                $html .= $securityBlock; // fallback paranoico
+            }
+        }
+
+        // Aviso silencioso: se o HTML customizado não tiver name="email" type="email", o handler não acha.
+        // (Opcional: logar no admin)
+
         return $html;
     }
+
 
     /**
      * AJAX: inscreve/reativa e envia o post mais recente para o novo e-mail.
      */
     public function ajax_subscribe()
     {
+        // Nonce: precisa bater com o gerado no form (action=self::NONCE, field='nonce')
         check_ajax_referer(self::NONCE, 'nonce');
+
+        // Guard: rate-limit + honeypot + captcha
+        $guard = ENL_Security::guard_subscribe();
+        if (is_wp_error($guard)) {
+            $code = (int) $guard->get_error_code();
+            $msg  = $guard->get_error_message();
+
+            if ($code === 299) { // honeypot ⇒ sucesso silencioso
+                wp_send_json_success(['message' => 'ok']);
+            }
+            wp_send_json_error(['message' => $msg], $code ?: 400);
+        }
 
         $email = isset($_POST['email']) ? sanitize_email($_POST['email']) : '';
         if (!is_email($email)) {
@@ -197,9 +288,19 @@ class ENL_Plugin
 
         if ($row) {
             if ($row->status === 'active') wp_send_json_error(['message' => 'exists']);
-            $wpdb->update($table, ['status' => 'active', 'token' => $token, 'created_at' => current_time('mysql')], ['id' => $row->id]);
+            $wpdb->update(
+                $table,
+                ['status' => 'active', 'token' => $token, 'created_at' => current_time('mysql')],
+                ['id' => $row->id],
+                ['%s', '%s', '%s'],
+                ['%d']
+            );
         } else {
-            $wpdb->insert($table, ['email' => $email, 'status' => 'active', 'token' => $token]);
+            $wpdb->insert(
+                $table,
+                ['email' => $email, 'status' => 'active', 'token' => $token],
+                ['%s', '%s', '%s']
+            );
         }
 
         $sent = $this->send_latest_post_to($email, $token);
@@ -222,7 +323,7 @@ class ENL_Plugin
         $table = $wpdb->prefix . self::TABLE;
         $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table WHERE email=%s AND token=%s AND status='active'", $email, $token));
         if ($row) {
-            $wpdb->update($table, ['status' => 'unsub', 'unsub_at' => current_time('mysql')], ['id' => $row->id]);
+            $wpdb->update($table, ['status' => 'unsub', 'unsub_at' => current_time('mysql')], ['id' => $row->id], ['%s', '%s'], ['%d']);
             wp_safe_redirect(home_url('/obrigado/?unsub=ok'));
             exit;
         }
@@ -264,7 +365,6 @@ class ENL_Plugin
             return; // acabou
         }
 
-        // envia este bloco e guarda um "last log" (opcionalmente você pode acumular)
         $this->mailer->send_post_to_many($emails, (int)$post_id, function ($payload) {
             update_option('enl_last_log', [
                 'time'       => current_time('mysql'),

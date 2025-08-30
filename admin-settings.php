@@ -205,23 +205,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['enl_save']) && curren
         </p>
         <ol>
             <li>O formulário deve ter a classe <code>.newsletter-form</code>.</li>
-            <li>Deve conter um campo <code>&lt;input type="email"&gt;</code> (qualquer <code>id</code>/<code>name</code>).</li>
+            <li>Deve conter um campo <code>&lt;input type="email" name="email"&gt;</code> (o <code>id</code> é livre, mas o <code>name</code> deve ser <code>email</code>).</li>
             <li>Inclua um botão de envio (<code>&lt;button type="submit"&gt;</code> ou <code>&lt;input type="submit"&gt;</code>).</li>
-            <li>O atributo <code>action</code> pode ser <code>#</code>; o plugin intercepta e envia via AJAX.</li>
+            <li>O atributo <code>action</code> pode ser <code>#</code>; o plugin ajusta automaticamente para enviar via AJAX.</li>
             <li>Opcional: um elemento <code>.nl-feedback</code> logo após o formulário para mensagens (sucesso/erro).</li>
+            <li><strong>Importante:</strong> campos de segurança (nonce, honeypot e captcha) são adicionados automaticamente pelo plugin, não precisam estar no seu HTML.</li>
         </ol>
 
         <p><em>Exemplo recomendado:</em></p>
         <pre style="background:#f8f9fa;padding:10px;border:1px solid #ddd;font-size:12px;overflow:auto;"><?php
                                                                                                             echo esc_html('<form class="newsletter-form d-flex gap-2 mt-3" action="#" method="post">
   <label for="nl-email" class="visually-hidden">Seu e-mail</label>
-  <input id="nl-email" type="email" class="form-control" placeholder="Digite seu e-mail" required />
+  <input id="nl-email" type="email" name="email" class="form-control" placeholder="Digite seu e-mail" required />
   <button type="submit" class="btn btn-warning">
     <i class="bi bi-send-fill"></i>
   </button>
 </form>
 <div class="nl-feedback small mt-2"></div>');
                                                                                                             ?></pre>
+
 
         <table class="form-table">
             <tr>
